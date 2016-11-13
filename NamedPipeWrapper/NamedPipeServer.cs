@@ -4,60 +4,24 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
+using System.Runtime.Serialization.Formatters;
+using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using Common.Logging;
+using Newtonsoft.Json;
 
 // ReSharper disable ImpureMethodCallOnReadonlyValueField
 
 namespace NamedPipeWrapper
 {
-    public class NamedPipeMessage
-    {
-        private readonly NamedPipeServerStream _pipeServer;
-        private readonly NamedPipeServer _server;
-
-        public NamedPipeMessage(NamedPipeServerStream pipeServer, NamedPipeServer server, byte[] message)
-        {
-            this._pipeServer = pipeServer;
-            this._server = server;
-            Message = message;
-        }
-
-        public byte[] Message { get; private set; }
-
-        public void Respond(byte[] response)
-        {
-            _server.Write(_pipeServer, response);
-        }
-    }
-
-    public class NamedPipeMessageArgs : EventArgs
-    {
-        public NamedPipeMessageArgs(NamedPipeMessage message)
-        {
-            Message = message;
-        }
-
-        public NamedPipeMessage Message { get; set; }
-    }
-
-    public class ClientConnectedArgs : EventArgs
-    {
-        public ClientConnectedArgs(NamedPipeServer server)
-        {
-            Server = server;
-        }
-
-        public NamedPipeServer Server { get; set; }
-    }
-
     public class NamedPipeServer : IDisposable
     {
         private static readonly ILog _logger = LogManager.GetLogger<NamedPipeServer>();
 
 
         private readonly ConcurrentDictionary<NamedPipeServerStream, object> _servers = new ConcurrentDictionary<NamedPipeServerStream, object>();
-        //private readonly Dictionary<>
+        private readonly ConcurrentDictionary<Type, Action<DeserializedMessage>> _handlers = new ConcurrentDictionary<Type, Action<DeserializedMessage>>();
         private readonly SpinLock _spinLock = new SpinLock(false);
 
         private NamedPipeServerStream _listener;
@@ -75,6 +39,13 @@ namespace NamedPipeWrapper
         public event EventHandler<ClientConnectedArgs> ClientConnected;
 
         public event EventHandler<ClientConnectedArgs> ClientDisconnected;
+
+        public void HandleMessage<T>(Action<DeserializedMessage<T>> handler)
+        {
+            var wrapper = new Action<DeserializedMessage>(message => handler((DeserializedMessage<T>)message));
+
+            _handlers.AddOrUpdate(typeof(T), wrapper, (type, action) => wrapper);
+        }
 
         public void StartListen()
         {
@@ -115,9 +86,9 @@ namespace NamedPipeWrapper
             _servers.Clear();
         }
 
-        public void WriteToAll(byte[] message)
+        public async Task WriteToAllAsync(byte[] message)
         {
-            _logger.Debug(nameof(WriteToAll));
+            _logger.Debug(nameof(WriteToAllAsync));
 
             List<NamedPipeServerStream> dead = null;
 
@@ -128,31 +99,9 @@ namespace NamedPipeWrapper
                 if (!server.CanWrite)
                     continue;
 
-                try
-                {
-                    server.BeginWrite(message, 0, message.Length, EndWrite, server);
-                }
-                catch (Exception e)
-                {
-                    if (e is ObjectDisposedException ||
-                        e is InvalidOperationException ||
-                        e is IOException)
-                    {
-                        _logger.Info("One of the servers is dead and will be collected");
-
-                        // If the server is dead, we stash its corpse for further disposal
-                        if (dead == null)
-                            dead = new List<NamedPipeServerStream>();
-                        dead.Add(server);
-                    }
-                }
+                await WriteAsync(server, message);
             }
             _spinLock.Exit();
-
-            // Get rid of the corpses
-            if (dead != null && dead.Count > 0)
-                for (int i = 0; i < dead.Count; i++)
-                    RemoveServer(dead[i]);
         }
 
         public void Dispose()
@@ -168,11 +117,17 @@ namespace NamedPipeWrapper
                 _logger.Debug(nameof(Dispose));
                 StopListen();
                 StopServers();
+                _handlers.Clear();
             }
         }
 
         protected void OnMessageReceived(NamedPipeMessage message)
         {
+            if (HandleSerializedMessage(message))
+            {
+                return;
+            }
+
             if (MessageReceived != null)
                 MessageReceived(this, new NamedPipeMessageArgs(message));
         }
@@ -189,16 +144,16 @@ namespace NamedPipeWrapper
                 ClientDisconnected(this, new ClientConnectedArgs(server));
         }
 
-        internal void Write(NamedPipeServerStream server, byte[] message)
+        internal async Task WriteAsync(NamedPipeServerStream server, byte[] message)
         {
-            _logger.Debug(nameof(Write));
+            _logger.Debug(nameof(WriteAsync));
 
             if (!server.CanWrite)
                 return;
 
             try
             {
-                server.BeginWrite(message, 0, message.Length, EndWrite, server);
+                await server.WriteAsync(message, 0, message.Length);
             }
             catch (Exception e)
             {
@@ -213,91 +168,38 @@ namespace NamedPipeWrapper
             }
         }
 
-        private void EndWrite(IAsyncResult result)
+        private bool HandleSerializedMessage(NamedPipeMessage message)
         {
-            var server = (NamedPipeServerStream)result.AsyncState;
+            if (_handlers.Count == 0)
+            {
+                return false;
+            }
+
+            string json;
+            object deserialized;
 
             try
             {
-                server.EndWrite(result);
+                json = Encoding.UTF8.GetString(message.Message);
+                deserialized = JsonSerializer.Deserialize(json);
             }
             catch (Exception e)
             {
-                if (e is ObjectDisposedException ||
-                    e is OperationCanceledException ||
-                    e is IOException)
-                {
-                    // The pipe is effectively dead at this point
-                    _logger.Info("Detected dead pipe in EndWrite.");
-                    RemoveServer(server);
-                }
+                _logger.Info($"Failed to deserialize message", e);
+                return false;
             }
-        }
 
-        private void EndWaitForConnection(IAsyncResult result)
-        {
-            var server = (NamedPipeServerStream)result.AsyncState;
+            _logger.Debug($"Received serialized message: {json}");
 
-            try
+            Action<DeserializedMessage> handler;
+            if (_handlers.TryGetValue(deserialized.GetType(), out handler))
             {
-                server.EndWaitForConnection(result);
-            }
-            catch (ObjectDisposedException)
-            {
-                _logger.Info("Detected dead pipe in EndWaitForConnection.");
-                return;
+                handler(new DeserializedMessage(message, deserialized));
+                return true;
             }
 
-            AddServer(server);
-
-            if (server.CanRead)
-                BeginRead(new ReadDto(server, null, new byte[1024]));
-
-            if (_shouldListen == 1)
-                SpawnListener();
-
-            OnClientConnected(this);
-        }
-
-        private void EndRead(IAsyncResult result)
-        {
-            var dto = (ReadDto)result.AsyncState;
-
-            int read = 0;
-
-            try
-            {
-                read = dto.Server.EndRead(result);
-            }
-            catch (IOException)
-            {
-            }
-
-            if (read == 0)
-            {
-                RemoveServer(dto.Server);
-                return;
-            }
-
-            // If we got the whole message in one read, don't fuck around
-            if (dto.Server.IsMessageComplete && dto.Data == null)
-            {
-                var msg = new byte[read];
-
-                Array.Copy(dto.Buffer, msg, read);
-                RaiseMessageRecieved(dto, msg);
-                return;
-            }
-
-            if (dto.Data == null)
-                dto.Data = new MemoryStream();
-
-            dto.Data.Write(dto.Buffer, 0, read);
-
-            if (dto.Server.IsMessageComplete)
-                RaiseMessageRecieved(dto, dto.Data.ToArray());
-            else
-                BeginRead(dto);
+            _logger.Info("No handler found for this message, dropping.");
+            return false;
         }
 
         private void AddServer(NamedPipeServerStream server)
@@ -325,24 +227,83 @@ namespace NamedPipeWrapper
                 OnClientDisconnected(this);
         }
 
-        private void RaiseMessageRecieved(ReadDto dto, byte[] msg)
+        private void RaiseMessageRecieved(NamedPipeServerStream server, ReadDto dto, byte[] msg)
         {
             dto.Data = null;
-            BeginRead(dto);
-            OnMessageReceived(new NamedPipeMessage(dto.Server, this, msg));
-        }
-
-        private void BeginRead(ReadDto dto)
-        {
-            dto.Server.BeginRead(dto.Buffer, 0, dto.Buffer.Length, EndRead, dto);
+            ReadNextMessage(server, dto);
+            OnMessageReceived(new NamedPipeMessage(server, this, msg));
         }
 
         private void SpawnListener()
         {
-            _logger.Debug(nameof(SpawnListener));
+            ListenForConnection().HandleException(e => HandlePipeException(e, null));
+        }
 
-            _listener = GetServer();
-            _listener.BeginWaitForConnection(EndWaitForConnection, _listener);
+        private void ReadNextMessage(NamedPipeServerStream server, ReadDto dto)
+        {
+            ReadNextMessageAsync(server, dto).HandleException(e => HandlePipeException(e, server));
+        }
+
+        private void HandlePipeException(Exception exception, NamedPipeServerStream server)
+        {
+            if (exception is IOException || exception is ObjectDisposedException || exception is OperationCanceledException)
+            {
+                if (server != null)
+                {
+                    RemoveServer(server);
+                }
+                return;
+            }
+
+            throw exception;
+        }
+
+        private async Task ReadNextMessageAsync(NamedPipeServerStream server, ReadDto dto)
+        {
+            int read = await server.ReadAsync(dto.Buffer, 0, dto.Buffer.Length);
+            if (read == 0)
+            {
+                RemoveServer(server);
+                return;
+            }
+
+            // If we got the whole message in one read, don't fuck around
+            if (server.IsMessageComplete && dto.Data == null)
+            {
+                var msg = new byte[read];
+
+                Array.Copy(dto.Buffer, msg, read);
+                RaiseMessageRecieved(server, dto, msg);
+                return;
+            }
+
+            if (dto.Data == null)
+                dto.Data = new MemoryStream();
+
+            dto.Data.Write(dto.Buffer, 0, read);
+
+            if (server.IsMessageComplete)
+                RaiseMessageRecieved(server, dto, dto.Data.ToArray());
+            else
+                ReadNextMessage(server, dto);
+        }
+
+        private async Task ListenForConnection()
+        {
+            _logger.Debug(nameof(ListenForConnection));
+
+            var server = GetServer();
+            await server.WaitForConnectionAsync();
+
+            AddServer(server);
+
+            if (server.CanRead)
+                ReadNextMessage(server, new ReadDto(null, new byte[1024]));
+
+            if (_shouldListen == 1)
+                SpawnListener();
+
+            OnClientConnected(this);
         }
 
         private NamedPipeServerStream GetServer()
@@ -352,13 +313,11 @@ namespace NamedPipeWrapper
 
         private class ReadDto
         {
-            public readonly NamedPipeServerStream Server;
             public readonly byte[] Buffer;
             public MemoryStream Data;
 
-            public ReadDto(NamedPipeServerStream server, MemoryStream data, byte[] buffer)
+            public ReadDto(MemoryStream data, byte[] buffer)
             {
-                Server = server;
                 Data = data;
                 Buffer = buffer;
             }
