@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO.Pipes;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,11 +25,16 @@ namespace NamedPipeWrapper
         {
             Logger.Info($"Trying to connect to {_pipeName}");
 
+            var pipeSecurity = new PipeSecurity();
+            var psEveryone = new PipeAccessRule("Everyone", PipeAccessRights.FullControl, System.Security.AccessControl.AccessControlType.Allow);
+            pipeSecurity.AddAccessRule(psEveryone);
+
             _client = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.WriteThrough);
 
             try
             {
                 await _client.ConnectAsync(_timeout);
+                _client.ReadMode = PipeTransmissionMode.Message;
             }
             catch (Exception e)
             {

@@ -58,6 +58,8 @@ namespace NamedPipeWrapper
                 return;
             }
 
+            Logger.Warn($"Unhandled stream exception: {exception.Message}", exception);
+
             throw exception;
         }
 
@@ -75,12 +77,15 @@ namespace NamedPipeWrapper
                     return;
                 }
 
-                if (stream.IsMessageComplete && ms == null)
+                if (ms == null)
                 {
-                    break;
+                    if (stream.IsMessageComplete)
+                    {
+                        break;
+                    }
+                    
+                    ms = new MemoryStream();
                 }
-
-                ms = new MemoryStream();
 
                 ms.Write(buffer, 0, read);
             } while (stream.IsMessageComplete);

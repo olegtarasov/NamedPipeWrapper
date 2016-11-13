@@ -70,6 +70,16 @@ namespace NamedPipeWrapper
             _servers.Clear();
         }
 
+        public Task SendMessageToAllAsync<T>(T message)
+        {
+            string json = JsonSerializer.Serialize(message);
+            var buffer = Encoding.UTF8.GetBytes(json);
+
+            Logger.Info($"Sending message to all clients: {json}");
+
+            return SendToAllAsync(buffer);
+        }
+
         public async Task SendToAllAsync(byte[] message)
         {
             Logger.Debug(nameof(SendToAllAsync));

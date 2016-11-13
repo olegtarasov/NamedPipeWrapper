@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 
 namespace NamedPipeWrapper
 {
-	public static class TaskHelpers
+    internal static class TaskExtensions
 	{
 	    public static void ThrowExceptions(this Task task)
 	    {
