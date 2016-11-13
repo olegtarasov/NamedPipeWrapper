@@ -5,13 +5,13 @@ namespace NamedPipeWrapper
 {
     public class NamedPipeMessage
     {
-        private readonly NamedPipeServerStream _pipeServer;
-        private readonly NamedPipeServer _server;
+        private readonly PipeStream _stream;
+        private readonly NamedPipeBase _pipe;
 
-        public NamedPipeMessage(NamedPipeServerStream pipeServer, NamedPipeServer server, byte[] message)
+        public NamedPipeMessage(PipeStream stream, NamedPipeBase pipe, byte[] message)
         {
-            this._pipeServer = pipeServer;
-            this._server = server;
+            this._stream = stream;
+            this._pipe = pipe;
             Message = message;
         }
 
@@ -19,7 +19,7 @@ namespace NamedPipeWrapper
 
         public Task RespondAsync(byte[] response)
         {
-            return _server.WriteAsync(_pipeServer, response);
+            return _pipe.SendAsync(_stream, response);
         }
     }
 }

@@ -1,38 +1,76 @@
 ﻿using System;
 using System.IO.Pipes;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Common.Logging;
 
 namespace NamedPipeWrapper
 {
-    public class NamedPipeClient
+    public class NamedPipeClient : NamedPipeBase
     {
-        private static readonly ILog _logger = LogManager.GetLogger<NamedPipeClient>();
+        private readonly string _pipeName;
+        private readonly int _timeout;
 
         private NamedPipeClientStream _client;
 
-        public void Connect(string pipeName)
+        public NamedPipeClient(string pipeName, TimeSpan timeout)
         {
-            _logger.Debug(nameof(Connect));
+            _timeout = (int)timeout.TotalMilliseconds;
+            _pipeName = pipeName;
+        }
 
-            _client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.WriteThrough);
+        public async Task ConnectAsync()
+        {
+            Logger.Info($"Trying to connect to {_pipeName}");
+
+            _client = new NamedPipeClientStream(".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.WriteThrough);
+
             try
             {
-                _client.Connect(1000);
+                await _client.ConnectAsync(_timeout);
             }
-            catch (TimeoutException e)
+            catch (Exception e)
             {
-                _logger.Warn($"Failed to connect to local pipe '{pipeName}' due to 1 second timeout");
+                Logger.Warn($"Failed to connect to {_pipeName} ({e.Message})", e);
+                _client = null;
                 throw;
             }
+
+            Logger.Info($"Connected to {_pipeName}");
+
+            ReadNextMessage(_client);
+        }
+
+        protected override void OnPipeDied(PipeStream stream)
+        {
+            base.OnPipeDied(stream);
+            ConnectAsync().HandleException(e =>
+            {
+                Logger.Warn($"Reconnect failed: {e.Message}", e);
+                throw e;
+            });
         }
 
         public Task SendAsync<T>(T message)
         {
+            if (_client == null)
+            {
+                throw new InvalidOperationException("Client is not connected!");
+            }
+
             string serialized = JsonSerializer.Serialize(message);
             var buffer = Encoding.UTF8.GetBytes(serialized);
             return _client.WriteAsync(buffer, 0, buffer.Length);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            if (disposing)
+            {
+                _client?.Dispose();
+            }
         }
     }
 }
