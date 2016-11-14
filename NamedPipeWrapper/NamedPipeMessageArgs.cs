@@ -9,6 +9,6 @@ namespace NamedPipeWrapper
             Message = message;
         }
 
-        public NamedPipeMessage Message { get; set; }
+        public NamedPipeMessage Message { get; }
     }
 }

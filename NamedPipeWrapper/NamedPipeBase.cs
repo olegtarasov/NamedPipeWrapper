@@ -2,7 +2,10 @@
 using System.Collections.Concurrent;
 using System.IO;
 using System.IO.Pipes;
+using System.Linq.Expressions;
+using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Common.Logging;
 
@@ -11,18 +14,23 @@ namespace NamedPipeWrapper
     public abstract class NamedPipeBase : IDisposable
     {
         protected readonly ILog Logger;
+        protected readonly CancellationTokenSource CancellationToken = new CancellationTokenSource();
 
         private readonly ConcurrentDictionary<Type, Action<DeserializedMessage>> _handlers = new ConcurrentDictionary<Type, Action<DeserializedMessage>>();
+
+        private bool _isDisposed = false;
 
         protected NamedPipeBase()
         {
             Logger = LogManager.GetLogger(GetType());
         }
 
-        public event EventHandler<NamedPipeMessageArgs> MessageReceived;
+        public event EventHandler<NamedPipeMessageArgs> BinaryMessageReceived;
 
         public void HandleMessage<T>(Action<DeserializedMessage<T>> handler)
         {
+            CheckDisposed();
+
             var wrapper = new Action<DeserializedMessage>(message => handler((DeserializedMessage<T>)message));
 
             _handlers.AddOrUpdate(typeof(T), wrapper, (type, action) => wrapper);
@@ -33,98 +41,110 @@ namespace NamedPipeWrapper
             Dispose(true);
         }
 
-        protected virtual void OnPipeDied(PipeStream stream)
+        protected void CheckDisposed()
         {
-            Logger.Info("Pipe stream is dead.");
+            if (_isDisposed) throw new ObjectDisposedException("Object has been disposed.");
+        }
+
+        protected virtual void OnPipeDied(PipeStream stream, bool isCancelled)
+        {
+            if (!isCancelled)
+            {
+                Logger.Info("Pipe stream is dead.");
+            }
         }
 
         protected virtual void Dispose(bool disposing)
         {
             if (disposing)
             {
+                _isDisposed = true;
                 _handlers.Clear();
+                CancellationToken.Cancel();
+                CancellationToken.Dispose();
             }
         }
 
-        protected void HandleStreamException(Exception exception, PipeStream stream)
+        protected async Task ReadMessagesAsync(PipeStream stream)
         {
-            if (exception is IOException || exception is ObjectDisposedException || exception is OperationCanceledException)
+            CheckDisposed();
+
+            if (!stream.CanRead)
             {
-                if (stream != null)
-                {
-                    Logger.Info("Pipe stream has died.");
-                    OnPipeDied(stream);
-                }
+                Logger.Warn($"Pipe stream doesn't support reading. Not listening to messages.");
                 return;
             }
 
-            Logger.Warn($"Unhandled stream exception: {exception.Message}", exception);
-
-            throw exception;
-        }
-
-        protected async Task ReadNextMessageAsync(PipeStream stream)
-        {
-            var buffer = new byte[1024];
-            MemoryStream ms = null;
-
-            do
+            while (!CancellationToken.Token.IsCancellationRequested)
             {
-                int read = await stream.ReadAsync(buffer, 0, buffer.Length);
-                if (read == 0)
+                var ms = new MemoryStream();
+
+                try
                 {
-                    OnPipeDied(stream);
+                    await stream.CopyToAsync(ms, 2048, CancellationToken.Token);
+                }
+                catch (OperationCanceledException e)
+                {
+                    OnPipeDied(stream, true);
+                    return;
+                }
+                catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException)
+                {
+                    OnPipeDied(stream, false);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Unhandled stream exception: {ex.Message}. Disposing the pipe.", ex);
+                    Dispose();
                     return;
                 }
 
-                if (ms == null)
+                if (ms.Length > 0)
                 {
-                    if (stream.IsMessageComplete)
-                    {
-                        break;
-                    }
-                    
-                    ms = new MemoryStream();
+                    var message = new NamedPipeMessage(stream, this, ms.ToArray());
+                    OnBinaryMessageReceived(message);
                 }
-
-                ms.Write(buffer, 0, read);
-            } while (stream.IsMessageComplete);
-
-            // Start reading the next message
-            ReadNextMessage(stream);
-
-            var message = new NamedPipeMessage(stream, this, ms == null ? buffer : ms.ToArray());
-            OnMessageReceived(message);
+            }
         }
 
-        protected void OnMessageReceived(NamedPipeMessage message)
+        protected void OnBinaryMessageReceived(NamedPipeMessage message)
         {
             if (HandleSerializedMessage(message))
             {
                 return;
             }
 
-            if (MessageReceived != null)
-                MessageReceived(this, new NamedPipeMessageArgs(message));
-        }
-
-        protected void ReadNextMessage(PipeStream stream)
-        {
-            ReadNextMessageAsync(stream).HandleException(e => HandleStreamException(e, stream));
+            if (BinaryMessageReceived != null)
+                BinaryMessageReceived(this, new NamedPipeMessageArgs(message));
         }
 
         internal async Task SendAsync(PipeStream stream, byte[] message)
         {
+            CheckDisposed();
+
             if (!stream.CanWrite)
+            {
+                Logger.Warn($"Tried to send a messege to the pipe that can't be written to. Dropping the message.");
                 return;
+            }
 
             try
             {
-                await stream.WriteAsync(message, 0, message.Length);
+                await stream.WriteAsync(message, 0, message.Length, CancellationToken.Token);
             }
-            catch (Exception e)
+            catch (OperationCanceledException e)
             {
-                HandleStreamException(e, stream);
+                OnPipeDied(stream, true);
+            }
+            catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException)
+            {
+                OnPipeDied(stream, false);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Unhandled stream exception: {ex.Message}. Disposing the pipe.", ex);
+                Dispose();
             }
         }
 
@@ -158,7 +178,7 @@ namespace NamedPipeWrapper
                 return true;
             }
 
-            Logger.Info("No handler found for this message, dropping.");
+            Logger.Info("No handler found for this message, processing as binary.");
             return false;
         }
     }

@@ -4,28 +4,15 @@ using System.Threading.Tasks;
 
 namespace NamedPipeWrapper
 {
-    internal static class TaskExtensions
+    internal static class TaskHelpers
 	{
-	    public static void ThrowExceptions(this Task task)
-	    {
-	        task.HandleException(ex =>
-	        {
-	            throw ex;
-	        });
-	    }
-
-	    public static void MuteExceptions(this Task task)
-	    {
-	        task.HandleException(x => {});
-	    }
-
-		public static void MuteExceptionsLight(this Task task)
+	    internal static void MuteExceptions(this Task task)
 		{
 			if (task.Exception != null)
 				task.Exception.Handle(x => true);
 		}
 
-		public static void HandleExceptionLight(this Task task, Action<Exception> handler)
+	    internal static void HandleExceptionLight(this Task task, Action<Exception> handler)
 		{
 			if (task.Exception != null)
 			{
@@ -37,7 +24,7 @@ namespace NamedPipeWrapper
 			}
 		}
 
-		public static void HandleException(this Task task, Action<Exception> handler)
+	    internal static void HandleException(this Task task, Action<Exception> handler)
 		{
 		    if (SynchronizationContext.Current == null)
 		    {

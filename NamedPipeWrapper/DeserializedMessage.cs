@@ -12,7 +12,7 @@ namespace NamedPipeWrapper
             Message = message;
         }
 
-        public T Message { get; set; }
+        public T Message { get; }
 
         public static explicit operator DeserializedMessage<T>(DeserializedMessage message)
         {
@@ -27,7 +27,7 @@ namespace NamedPipeWrapper
             Message = message;
         }
 
-        public object Message { get; set; }
+        public object Message { get; }
     }
 
     public abstract class DeserializedMessageBase

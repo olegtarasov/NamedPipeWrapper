@@ -49,8 +49,7 @@
     <Compile Include="NamedPipeServer.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="DeserializedMessage.cs" />
-    <Compile Include="ReadDto.cs" />
-    <Compile Include="TaskExtensions.cs" />
+    <Compile Include="TaskHelpers.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="project.json" />
