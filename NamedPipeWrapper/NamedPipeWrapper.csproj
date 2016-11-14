@@ -41,6 +41,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="ClientConnectedArgs.cs" />
+    <Compile Include="CollectionExtensions.cs" />
     <Compile Include="JsonSerializer.cs" />
     <Compile Include="NamedPipeBase.cs" />
     <Compile Include="NamedPipeClient.cs" />

@@ -26,9 +26,9 @@ namespace NamedPipeWrapper
 
         public bool IsConnected { get; set; }
 
-        public Task<bool> ConnectAsync(CancellationToken cancellationToken = default(CancellationToken))
+        public Task<bool> ConnectAsync(CancellationToken ct = default(CancellationToken))
         {
-            _aggreagateToken = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.Token, cancellationToken);
+            _aggreagateToken = CombineWithInternalToken(ct);
             return ConnectAsyncInternal();
         }
 
@@ -114,7 +114,7 @@ namespace NamedPipeWrapper
             string serialized = JsonSerializer.Serialize(message);
             var buffer = Encoding.UTF8.GetBytes(serialized);
 
-            Logger.Info($"Sending message: {serialized}");
+            Logger.Debug($"Sending message: {serialized}");
 
             return SendAsync(_client, buffer, ct);
         }

@@ -17,8 +17,6 @@ namespace NamedPipeWrapper
     {
         private readonly ConcurrentDictionary<NamedPipeServerStream, object> _streams = new ConcurrentDictionary<NamedPipeServerStream, object>();
         
-        private int _shouldListen;
-
         public NamedPipeServer(string pipeName)
         {
             PipeName = pipeName;
@@ -38,23 +36,22 @@ namespace NamedPipeWrapper
                 return;
             }
 
-            Interlocked.Exchange(ref _shouldListen, 1);
             ListenForConnectionsAsync().HandleException(ex => {});
         }
 
-        public Task SendMessageToAllAsync<T>(T message)
+        public Task SendMessageToAllAsync<T>(T message, CancellationToken ct = default(CancellationToken))
         {
             CheckDisposed();
 
             string json = JsonSerializer.Serialize(message);
             var buffer = Encoding.UTF8.GetBytes(json);
 
-            Logger.Info($"Sending message to all clients: {json}");
+            Logger.Debug($"Sending message to all clients: {json}");
 
-            return SendToAllAsync(buffer);
+            return SendToAllAsync(buffer, ct);
         }
 
-        public async Task SendToAllAsync(byte[] message)
+        public async Task SendToAllAsync(byte[] message, CancellationToken ct = default(CancellationToken))
         {
             CheckDisposed();
 
@@ -63,7 +60,7 @@ namespace NamedPipeWrapper
                 if (!server.CanWrite)
                     continue;
 
-                await SendAsync(server, message);
+                await SendAsync(server, message, ct);
             }
         }
 
@@ -104,9 +101,7 @@ namespace NamedPipeWrapper
 
         private void RemoveServer(NamedPipeServerStream server)
         {
-            object dummy;
-
-            if (_streams.TryRemove(server, out dummy))
+            if (_streams.Remove(server))
             {
                 OnClientDisconnected(this);
             }
@@ -118,13 +113,13 @@ namespace NamedPipeWrapper
 
             Logger.Info($"Starting to listen to connections on pipe {PipeName}");
 
-            while (!CancellationToken.Token.IsCancellationRequested)
+            while (!CancellationTokenSource.Token.IsCancellationRequested)
             {
                 var server = GetServer();
 
                 try
                 {
-                    await server.WaitForConnectionAsync(CancellationToken.Token);
+                    await server.WaitForConnectionAsync(CancellationTokenSource.Token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -141,12 +136,9 @@ namespace NamedPipeWrapper
                 AddServer(server);
 
                 if (server.CanRead)
-                    ReadMessagesAsync(server, CancellationToken.Token).HandleException(ex => { });
+                    ReadMessagesAsync(server, CancellationTokenSource.Token).HandleException(ex => { });
 
                 OnClientConnected(this);
-
-                if (_shouldListen == 0)
-                    break;
             }
         }
 

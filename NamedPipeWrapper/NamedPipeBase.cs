@@ -17,7 +17,7 @@ namespace NamedPipeWrapper
         private const int ReceiveCacheSize = 10;
 
         protected readonly ILog Logger;
-        protected readonly CancellationTokenSource CancellationToken = new CancellationTokenSource();
+        protected readonly CancellationTokenSource CancellationTokenSource = new CancellationTokenSource();
 
         private readonly ConcurrentDictionary<Type, Action<DeserializedMessage>> _handlers = new ConcurrentDictionary<Type, Action<DeserializedMessage>>();
         private readonly ConcurrentDictionary<DeserializedMessage, object> _messageCache = new ConcurrentDictionary<DeserializedMessage, object>();
@@ -31,108 +31,58 @@ namespace NamedPipeWrapper
 
         public event EventHandler<NamedPipeMessageArgs> BinaryMessageReceived;
 
-        public async Task<Tuple<DeserializedMessage<T1>, DeserializedMessage<T2>>> AwaitAnyMessageAsync<T1, T2>(CancellationToken cts = default(CancellationToken))
-            where T1 : class
-            where T2 : class
+        protected CancellationTokenSource CombineWithInternalToken(CancellationToken ct)
         {
-            // First we register a handler.
-            var evt = new ManualResetEventSlim();
-            Tuple<DeserializedMessage<T1>, DeserializedMessage<T2>> result = null;
-            HandleMessage<T1>(msg =>
-            {
-                result = new Tuple<DeserializedMessage<T1>, DeserializedMessage<T2>>(msg, null);
-                evt.Set();
-            });
-            HandleMessage<T2>(msg =>
-            {
-                result = new Tuple<DeserializedMessage<T1>, DeserializedMessage<T2>>(null, msg);
-                evt.Set();
-            });
-
-            // Then we check if the message is already in cache.
-            if (_messageCache.Count > 0)
-            {
-                bool found = false;
-
-                foreach (var message in _messageCache.Keys.ToList())
-                {
-                    var msg1 = message.Message as T1;
-                    if (msg1 != null)
-                    {
-                        result = new Tuple<DeserializedMessage<T1>, DeserializedMessage<T2>>((DeserializedMessage<T1>)message, null);
-                        found = true;
-                        object dummy;
-                        _messageCache.TryRemove(message, out dummy);
-                        break;
-                    }
-
-                    var msg2 = message.Message as T2;
-                    if (msg2 != null)
-                    {
-                        result = new Tuple<DeserializedMessage<T1>, DeserializedMessage<T2>>(null, (DeserializedMessage<T2>)message);
-                        found = true;
-                        object dummy;
-                        _messageCache.TryRemove(message, out dummy);
-                        break;
-                    }
-                }
-
-                if (found)
-                {
-                    Action<DeserializedMessage> dummy;
-                    _handlers.TryRemove(typeof(T1), out dummy);
-                    _handlers.TryRemove(typeof(T2), out dummy);
-
-                }
-            }
-
-            // We didn't find our message in cache, so just wait for it.
-            var ct = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.Token, cts);
-            try
-            {
-                await Task.Run(() => evt.Wait(ct.Token), ct.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                return null;
-            }
-
-            return result;
+            return CancellationTokenSource.CreateLinkedTokenSource(CancellationTokenSource.Token, ct);
         }
 
-        public async Task<DeserializedMessage<T>> AwaitSingleMessageAsync<T>(CancellationToken cts = default(CancellationToken)) where T : class 
+        public Task<DeserializedMessage> AwaitAnyMessageAsync<T1, T2>(CancellationToken ct = default(CancellationToken)) where T1 : class where T2 : class
         {
-            // First we register a handler.
-            var evt = new ManualResetEventSlim();
-            DeserializedMessage<T> result = null;
-            HandleMessage<T>(msg =>
-            {
-                result = msg;
-                evt.Set();
-            });
+            return AwaitAnyMessageAsync(new[] {typeof(T1), typeof(T2)}, ct);
+        }
 
-            // Then we check if the message is already in cache.
+        public async Task<DeserializedMessage<T>> AwaitSingleMessageAsync<T>(CancellationToken ct = default(CancellationToken)) where T : class
+        {
+            return (DeserializedMessage<T>)await AwaitAnyMessageAsync(new[] {typeof(T)}, ct);
+        }
+
+        private async Task<DeserializedMessage> AwaitAnyMessageAsync(Type[] types, CancellationToken ct = default(CancellationToken))
+        {
+            var evt = new ManualResetEventSlim();
+            DeserializedMessage result = null;
+            var set = types.ToHashSet();
+
+            foreach (var type in types)
+            {
+                var handler = new Action<DeserializedMessage>(msg =>
+                {
+                    result = msg;
+                    evt.Set();
+                });
+                _handlers.AddOrUpdate(type, handler, (t, a) => handler);
+            }
+
             if (_messageCache.Count > 0)
             {
                 foreach (var message in _messageCache.Keys.ToList())
                 {
-                    var msg = message.Message as T;
-                    if (msg != null)
+                    if (set.Contains(message.Message.GetType()))
                     {
-                        object dummy;
-                        _messageCache.TryRemove(message, out dummy);
-                        Action<DeserializedMessage> hDummy;
-                        _handlers.TryRemove(typeof(T), out hDummy);
-                        return (DeserializedMessage<T>)message;
+                        _messageCache.Remove(message);
+                        foreach (var type in types)
+                        {
+                            _handlers.Remove(type);
+                        }
+
+                        return message;
                     }
                 }
             }
 
-            // We didn't find our message in cache, so just wait for it.
-            var ct = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.Token, cts);
+            var cts = CombineWithInternalToken(ct);
             try
             {
-                await Task.Run(() => evt.Wait(ct.Token), ct.Token);
+                await Task.Run(() => evt.Wait(cts.Token), cts.Token);
             }
             catch (OperationCanceledException)
             {
@@ -175,12 +125,12 @@ namespace NamedPipeWrapper
             {
                 _isDisposed = true;
                 _handlers.Clear();
-                CancellationToken.Cancel();
-                CancellationToken.Dispose();
+                CancellationTokenSource.Cancel();
+                CancellationTokenSource.Dispose();
             }
         }
 
-        protected async Task ReadMessagesAsync(PipeStream stream, CancellationToken cancellationToken)
+        protected async Task ReadMessagesAsync(PipeStream stream, CancellationToken ct)
         {
             CheckDisposed();
 
@@ -190,7 +140,7 @@ namespace NamedPipeWrapper
                 return;
             }
 
-            while (!cancellationToken.IsCancellationRequested)
+            while (!ct.IsCancellationRequested)
             {
                 var buffer = new byte[2048];
                 var ms = new MemoryStream();
@@ -200,7 +150,7 @@ namespace NamedPipeWrapper
                     int read = 0;
                     try
                     {
-                        read = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
+                        read = await stream.ReadAsync(buffer, 0, buffer.Length, ct);
                     }
                     catch (OperationCanceledException e)
                     {
@@ -219,9 +169,10 @@ namespace NamedPipeWrapper
                         return;
                     }
 
-                    if (read == 0)
+                    if (read == 0) // Means that connection was closed.
                     {
-                        break;
+                        OnPipeDied(stream, false);
+                        return;
                     }
 
                     ms.Write(buffer, 0, read);
@@ -246,7 +197,7 @@ namespace NamedPipeWrapper
                 BinaryMessageReceived(this, new NamedPipeMessageArgs(message));
         }
 
-        internal async Task<bool> SendAsync(PipeStream stream, byte[] message, CancellationToken cts = default(CancellationToken))
+        internal async Task<bool> SendAsync(PipeStream stream, byte[] message, CancellationToken ct = default(CancellationToken))
         {
             CheckDisposed();
 
@@ -258,8 +209,8 @@ namespace NamedPipeWrapper
 
             try
             {
-                var ct = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.Token, cts);
-                await stream.WriteAsync(message, 0, message.Length, ct.Token);
+                var cts = CombineWithInternalToken(ct);
+                await stream.WriteAsync(message, 0, message.Length, cts.Token);
                 return true;
             }
             catch (OperationCanceledException e)
@@ -317,8 +268,7 @@ namespace NamedPipeWrapper
                     var key = _messageCache.Keys.FirstOrDefault();
                     if (key != null)
                     {
-                        object dummy;
-                        _messageCache.TryRemove(key, out dummy);
+                        _messageCache.Remove(key);
                     }
                 }
                 _messageCache.AddOrUpdate(msg, new object(), (deserializedMessage, o) => new object());

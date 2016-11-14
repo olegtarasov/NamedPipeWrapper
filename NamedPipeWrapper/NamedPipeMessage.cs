@@ -18,7 +18,7 @@ namespace NamedPipeWrapper
 
         public byte[] Message { get; private set; }
 
-        public Task RespondAsync(byte[] response, CancellationToken ct = default(CancellationToken))
+        public Task<bool> RespondAsync(byte[] response, CancellationToken ct = default(CancellationToken))
         {
             return _pipe.SendAsync(_stream, response, ct);
         }
