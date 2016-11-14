@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace NamedPipeWrapper
@@ -17,9 +18,9 @@ namespace NamedPipeWrapper
 
         public byte[] Message { get; private set; }
 
-        public Task RespondAsync(byte[] response)
+        public Task RespondAsync(byte[] response, CancellationToken ct = default(CancellationToken))
         {
-            return _pipe.SendAsync(_stream, response);
+            return _pipe.SendAsync(_stream, response, ct);
         }
     }
 }

@@ -141,7 +141,7 @@ namespace NamedPipeWrapper
                 AddServer(server);
 
                 if (server.CanRead)
-                    ReadMessagesAsync(server).HandleException(ex => { });
+                    ReadMessagesAsync(server, CancellationToken.Token).HandleException(ex => { });
 
                 OnClientConnected(this);
 

@@ -1,5 +1,6 @@
 ﻿using System.IO.Pipes;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Common.Logging;
 
@@ -41,14 +42,14 @@ namespace NamedPipeWrapper
 
         public NamedPipeMessage OriginalMessage { get; set; }
 
-        public Task RespondAsync<T>(T message)
+        public Task RespondAsync<T>(T message, CancellationToken ct = default(CancellationToken))
         {
             string json = JsonSerializer.Serialize(message);
             var buffer = Encoding.UTF8.GetBytes(json);
 
             Logger.Info($"Responding with message: {json}");
 
-            return OriginalMessage.RespondAsync(buffer);
+            return OriginalMessage.RespondAsync(buffer, ct);
         }
     }
 }

@@ -16,6 +16,7 @@ namespace NamedPipeWrapper
         private readonly int _timeout;
 
         private NamedPipeClientStream _client;
+        private CancellationTokenSource _aggreagateToken;
 
         public NamedPipeClient(string pipeName, TimeSpan timeout)
         {
@@ -25,7 +26,13 @@ namespace NamedPipeWrapper
 
         public bool IsConnected { get; set; }
 
-        public async Task<bool> ConnectAsync()
+        public Task<bool> ConnectAsync(CancellationToken cancellationToken = default(CancellationToken))
+        {
+            _aggreagateToken = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.Token, cancellationToken);
+            return ConnectAsyncInternal();
+        }
+
+        private async Task<bool> ConnectAsyncInternal()
         {
             CheckDisposed();
 
@@ -37,7 +44,7 @@ namespace NamedPipeWrapper
 
             try
             {
-                await _client.ConnectAsync(_timeout, CancellationToken.Token);
+                await _client.ConnectAsync(_timeout, _aggreagateToken.Token);
                 _client.ReadMode = PipeTransmissionMode.Message;
             }
             catch (OperationCanceledException e)
@@ -56,7 +63,7 @@ namespace NamedPipeWrapper
 
             IsConnected = true;
 
-            ReadMessagesAsync(_client).HandleException(ex => {}); // All exceptions are handled internally.
+            ReadMessagesAsync(_client, _aggreagateToken.Token).HandleException(ex => { }); // All exceptions are handled internally.
 
             return true;
         }
@@ -81,8 +88,8 @@ namespace NamedPipeWrapper
             while (attemptCount < MaxReconnectAttempts)
             {
                 Logger.Info($"Will attempt to reconnect in {interval.TotalSeconds} s.");
-                await Task.Delay(interval);
-                if (await ConnectAsync())
+                await Task.Delay(interval, _aggreagateToken.Token);
+                if (await ConnectAsyncInternal())
                 {
                     return;
                 }
@@ -95,18 +102,21 @@ namespace NamedPipeWrapper
             Dispose();
         }
 
-        public Task SendAsync<T>(T message)
+        public Task<bool> SendAsync<T>(T message, CancellationToken ct = default(CancellationToken))
         {
             CheckDisposed();
 
             if (!IsConnected)
             {
-                throw new InvalidOperationException("Client is not connected!");
+                return Task.FromResult(false);
             }
 
             string serialized = JsonSerializer.Serialize(message);
             var buffer = Encoding.UTF8.GetBytes(serialized);
-            return SendAsync(_client, buffer);
+
+            Logger.Info($"Sending message: {serialized}");
+
+            return SendAsync(_client, buffer, ct);
         }
 
         protected override void Dispose(bool disposing)
