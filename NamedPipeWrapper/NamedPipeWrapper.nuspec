@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package >
+  <metadata>
+    <id>NotLimited.NamedPipeWrapper</id>
+    <version>1.0.0</version>
+    <title>NotLimited.NamedPipeWrapper</title>
+    <authors>Oleg Tarasov</authors>
+    <owners>Oleg Tarasov</owners>
+    <projectUrl>https://github.com/olegtarasov/NamedPipeWrapper</projectUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>Async named pipe wrapper with structured message support.</description>
+    <copyright>Copyright 2017</copyright>
+  </metadata>
+</package>
