@@ -2,7 +2,7 @@
 <package >
   <metadata>
     <id>NotLimited.NamedPipeWrapper</id>
-    <version>1.0.0</version>
+    <version>$version$</version>
     <title>NotLimited.NamedPipeWrapper</title>
     <authors>Oleg Tarasov</authors>
     <owners>Oleg Tarasov</owners>
