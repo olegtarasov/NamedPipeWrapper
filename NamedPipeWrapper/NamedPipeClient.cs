@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Common.Logging;
+using Wire;
 
 namespace NamedPipeWrapper
 {
@@ -111,12 +112,9 @@ namespace NamedPipeWrapper
                 return Task.FromResult(false);
             }
 
-            string serialized = JsonSerializer.Serialize(message);
-            var buffer = Encoding.UTF8.GetBytes(serialized);
+            Logger.Debug("Sending message.");
 
-            Logger.Debug($"Sending message: {serialized}");
-
-            return SendAsync(_client, buffer, ct);
+            return SendAsync(_client, message.Serialize(), ct);
         }
 
         protected override void Dispose(bool disposing)

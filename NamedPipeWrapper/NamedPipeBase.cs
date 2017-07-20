@@ -19,9 +19,9 @@ namespace NamedPipeWrapper
         protected readonly ILog Logger;
         protected readonly CancellationTokenSource CancellationTokenSource = new CancellationTokenSource();
 
-        private readonly ConcurrentDictionary<Type, Action<DeserializedMessage>> _handlers = new ConcurrentDictionary<Type, Action<DeserializedMessage>>();
-        private readonly ConcurrentDictionary<DeserializedMessage, object> _messageCache = new ConcurrentDictionary<DeserializedMessage, object>();
-
+        private readonly ConcurrentDictionary<Type, Action<NamedPipeMessage>> _handlers = new ConcurrentDictionary<Type, Action<NamedPipeMessage>>();
+        private readonly ConcurrentDictionary<NamedPipeMessage, object> _messageCache = new ConcurrentDictionary<NamedPipeMessage, object>();
+        
         private bool _isDisposed = false;
 
         protected NamedPipeBase()
@@ -29,32 +29,30 @@ namespace NamedPipeWrapper
             Logger = LogManager.GetLogger(GetType());
         }
 
-        public event EventHandler<NamedPipeMessageArgs> BinaryMessageReceived;
-
         protected CancellationTokenSource CombineWithInternalToken(CancellationToken ct)
         {
             return CancellationTokenSource.CreateLinkedTokenSource(CancellationTokenSource.Token, ct);
         }
 
-        public Task<DeserializedMessage> AwaitAnyMessageAsync<T1, T2>(CancellationToken ct = default(CancellationToken)) where T1 : class where T2 : class
+        public Task<NamedPipeMessage> AwaitAnyMessageAsync<T1, T2>(CancellationToken ct = default(CancellationToken)) where T1 : class where T2 : class
         {
             return AwaitAnyMessageAsync(new[] {typeof(T1), typeof(T2)}, ct);
         }
 
-        public async Task<DeserializedMessage<T>> AwaitSingleMessageAsync<T>(CancellationToken ct = default(CancellationToken)) where T : class
+        public async Task<NamedPipeMessage<T>> AwaitSingleMessageAsync<T>(CancellationToken ct = default(CancellationToken)) where T : class
         {
-            return (DeserializedMessage<T>)await AwaitAnyMessageAsync(new[] {typeof(T)}, ct);
+            return new NamedPipeMessage<T>(await AwaitAnyMessageAsync(new[] {typeof(T)}, ct));
         }
 
-        private async Task<DeserializedMessage> AwaitAnyMessageAsync(Type[] types, CancellationToken ct = default(CancellationToken))
+        private async Task<NamedPipeMessage> AwaitAnyMessageAsync(Type[] types, CancellationToken ct = default(CancellationToken))
         {
             var evt = new ManualResetEventSlim();
-            DeserializedMessage result = null;
+            NamedPipeMessage result = null;
             var set = types.ToHashSet();
 
             foreach (var type in types)
             {
-                var handler = new Action<DeserializedMessage>(msg =>
+                var handler = new Action<NamedPipeMessage>(msg =>
                 {
                     result = msg;
                     evt.Set();
@@ -66,7 +64,7 @@ namespace NamedPipeWrapper
             {
                 foreach (var message in _messageCache.Keys.ToList())
                 {
-                    if (set.Contains(message.Message.GetType()))
+                    if (set.Contains(message.MessageObject.GetType()))
                     {
                         _messageCache.Remove(message);
                         foreach (var type in types)
@@ -92,11 +90,11 @@ namespace NamedPipeWrapper
             return result;
         }
 
-        public void HandleMessage<T>(Action<DeserializedMessage<T>> handler)
+        public void HandleMessage<T>(Action<NamedPipeMessage<T>> handler)
         {
             CheckDisposed();
 
-            var wrapper = new Action<DeserializedMessage>(message => handler((DeserializedMessage<T>)message));
+            var wrapper = new Action<NamedPipeMessage>(message => handler(new NamedPipeMessage<T>(message)));
 
             _handlers.AddOrUpdate(typeof(T), wrapper, (type, action) => wrapper);
         }
@@ -180,25 +178,25 @@ namespace NamedPipeWrapper
 
                 if (ms.Length > 0)
                 {
-                    var message = new NamedPipeMessage(stream, this, ms.ToArray());
-                    OnBinaryMessageReceived(message);
+                    try
+                    {
+                        var message = new NamedPipeMessage(stream, this, ms.ToArray());
+                        Logger.Debug($"Received a message of type {message.MessageObject.GetType()}");
+                        HandleMessage(message);
+                    }
+                    catch (Exception e)
+                    {
+                        Logger.Warn("Failed to deserialize message!");
+                    }
                 }
             }
         }
 
-        protected void OnBinaryMessageReceived(NamedPipeMessage message)
-        {
-            if (HandleSerializedMessage(message))
-            {
-                return;
-            }
-
-            if (BinaryMessageReceived != null)
-                BinaryMessageReceived(this, new NamedPipeMessageArgs(message));
-        }
-
         internal async Task<bool> SendAsync(PipeStream stream, byte[] message, CancellationToken ct = default(CancellationToken))
         {
+            if (message == null)
+                return false;
+
             CheckDisposed();
 
             if (!stream.CanWrite)
@@ -230,34 +228,17 @@ namespace NamedPipeWrapper
             return false;
         }
 
-        private bool HandleSerializedMessage(NamedPipeMessage message)
+        private bool HandleMessage(NamedPipeMessage message)
         {
             if (_handlers.Count == 0)
             {
                 return false;
             }
 
-            string json;
-            object deserialized;
-
-            try
+            Action<NamedPipeMessage> handler;
+            if (_handlers.TryGetValue(message.MessageObject.GetType(), out handler))
             {
-                json = Encoding.UTF8.GetString(message.Message);
-                deserialized = JsonSerializer.Deserialize(json);
-            }
-            catch (Exception e)
-            {
-                Logger.Warn("Failed to deserialize message", e);
-                return false;
-            }
-
-            Logger.Debug($"Received serialized message: {json}");
-
-            Action<DeserializedMessage> handler;
-            var msg = new DeserializedMessage(message, deserialized);
-            if (_handlers.TryGetValue(deserialized.GetType(), out handler))
-            {
-                handler(msg);
+                handler(message);
             }
             else
             {
@@ -271,7 +252,7 @@ namespace NamedPipeWrapper
                         _messageCache.Remove(key);
                     }
                 }
-                _messageCache.AddOrUpdate(msg, new object(), (deserializedMessage, o) => new object());
+                _messageCache.AddOrUpdate(message, new object(), (deserializedMessage, o) => new object());
             }
 
             return true;

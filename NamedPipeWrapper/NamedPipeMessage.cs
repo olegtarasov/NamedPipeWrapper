@@ -1,9 +1,21 @@
+using System.IO;
 using System.IO.Pipes;
 using System.Threading;
 using System.Threading.Tasks;
+using Common.Logging;
+using Wire;
 
 namespace NamedPipeWrapper
 {
+    public sealed class NamedPipeMessage<T> : NamedPipeMessage
+    {
+        public NamedPipeMessage(NamedPipeMessage originalMessage) : base(originalMessage)
+        {
+        }
+
+        public T Message => (T)MessageObject;
+    }
+
     public class NamedPipeMessage
     {
         private readonly PipeStream _stream;
@@ -13,10 +25,26 @@ namespace NamedPipeWrapper
         {
             this._stream = stream;
             this._pipe = pipe;
-            Message = message;
+
+            using (var ms = new MemoryStream(message))
+            {
+                MessageObject = new Serializer().Deserialize(ms);
+            }
         }
 
-        public byte[] Message { get; private set; }
+        protected NamedPipeMessage(NamedPipeMessage original)
+        {
+            _stream = original._stream;
+            _pipe = original._pipe;
+            MessageObject = original.MessageObject;
+        }
+
+        public object MessageObject { get; }
+
+        public Task<bool> RespondAsync<T>(T message, CancellationToken ct = default(CancellationToken))
+        {
+            return RespondAsync(message.Serialize(), ct);
+        }
 
         public Task<bool> RespondAsync(byte[] response, CancellationToken ct = default(CancellationToken))
         {

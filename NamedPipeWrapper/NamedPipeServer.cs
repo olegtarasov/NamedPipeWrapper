@@ -43,12 +43,9 @@ namespace NamedPipeWrapper
         {
             CheckDisposed();
 
-            string json = JsonSerializer.Serialize(message);
-            var buffer = Encoding.UTF8.GetBytes(json);
+            Logger.Debug("Sending message to all clients.");
 
-            Logger.Debug($"Sending message to all clients: {json}");
-
-            return SendToAllAsync(buffer, ct);
+            return SendToAllAsync(message.Serialize(), ct);
         }
 
         public async Task SendToAllAsync(byte[] message, CancellationToken ct = default(CancellationToken))
