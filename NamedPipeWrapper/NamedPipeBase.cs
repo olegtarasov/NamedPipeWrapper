@@ -34,12 +34,12 @@ namespace NamedPipeWrapper
             return CancellationTokenSource.CreateLinkedTokenSource(CancellationTokenSource.Token, ct);
         }
 
-        public Task<NamedPipeMessage> AwaitAnyMessageAsync<T1, T2>(CancellationToken ct = default(CancellationToken)) where T1 : class where T2 : class
+        public Task<NamedPipeMessage> AwaitAnyMessageAsync<T1, T2>(CancellationToken ct = default(CancellationToken))
         {
             return AwaitAnyMessageAsync(new[] {typeof(T1), typeof(T2)}, ct);
         }
 
-        public async Task<NamedPipeMessage<T>> AwaitSingleMessageAsync<T>(CancellationToken ct = default(CancellationToken)) where T : class
+        public async Task<NamedPipeMessage<T>> AwaitSingleMessageAsync<T>(CancellationToken ct = default(CancellationToken))
         {
             return new NamedPipeMessage<T>(await AwaitAnyMessageAsync(new[] {typeof(T)}, ct));
         }
